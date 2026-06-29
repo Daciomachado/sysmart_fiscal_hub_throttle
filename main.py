@@ -1,6 +1,6 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
-import threading, datetime, logging
+import threading, datetime, logging, time # <-- CORREÇÃO: import time adicionado
 from pathlib import Path
 
 from core.config import carregar_config
@@ -105,6 +105,7 @@ class App:
         threading.Thread(target=self._buscar, daemon=True).start()
 
     def _buscar(self):
+        conn = None # <-- CORREÇÃO: Inicializa a variável antes do try
         try:
             self.log("Conectando ao SQL Server...")
             conn = conectar(self.cfg.sql)
@@ -124,12 +125,14 @@ class App:
             }[self.cmb_situacao.get()]
             self.log(f"Buscando documentos {mes:02d}/{ano} tipo {tipo} situação {situacao}...")
             self.docs = listar_documentos(conn, ano, mes, tipo, situacao, self.cfg.sync.max_tentativas)
-            conn.close()
             self.root.after(0, self.grade)
             self.log(f"Documentos encontrados: {len(self.docs)}")
         except Exception as e:
             self.log(f"ERRO: {e}")
             self.root.after(0, lambda: messagebox.showerror("Erro", str(e)))
+        finally:
+            if conn: # <-- CORREÇÃO: Garante o fechamento mesmo com erro
+                conn.close()
 
     def grade(self):
         for x in self.tree.get_children():
@@ -171,7 +174,6 @@ class App:
         if messagebox.askyesno("Confirmar", f"Deseja enviar {len(docs)} documento(s)?"):
             threading.Thread(target=self._enviar, args=(docs,), daemon=True).start()
 
-
     def aplicar_pausa_envio(self, codigo=None):
         if str(codigo) == "500":
             pausa_500 = int(getattr(self.cfg.sync, "pausar_apos_erro_500_segundos", 30))
@@ -191,9 +193,11 @@ class App:
         if self.enviando:
             self.log("Envio ignorado: já existe envio em andamento.")
             return
+        
         self.enviando = True
         ok = 0
         falha = 0
+        conn = None # <-- CORREÇÃO: Inicializa a variável
         try:
             conn = conectar(self.cfg.sql)
             garantir_tabela_integracao(conn)
@@ -219,7 +223,7 @@ class App:
                     self.log(f"FALHA {d['tipo']} {d['chave']} Código {codigo}: {str(msg)[:300]}")
 
                 self.aplicar_pausa_envio(codigo)
-            conn.close()
+            
             self.log(f"Envio finalizado. Sucesso: {ok} | Falhas: {falha}")
             self.root.after(0, lambda: messagebox.showinfo("Finalizado", f"Sucesso: {ok}\nFalhas: {falha}"))
             self.buscar()
@@ -227,6 +231,8 @@ class App:
             self.log(f"ERRO no envio: {e}")
             self.root.after(0, lambda: messagebox.showerror("Erro", str(e)))
         finally:
+            if conn: # <-- CORREÇÃO: Fecha a conexão de forma segura
+                conn.close()
             self.enviando = False
 
     def agendar_auto_verificacao(self):
@@ -242,6 +248,7 @@ class App:
         threading.Thread(target=self._auto_verificar_thread, daemon=True).start()
 
     def _auto_verificar_thread(self):
+        conn = None # <-- CORREÇÃO: Inicializa a variável
         try:
             self.log("Auto verificação: consultando XMLs pendentes ou com falha...")
             conn = conectar(self.cfg.sql)
@@ -249,21 +256,25 @@ class App:
             mes = dict(MESES)[self.cmb_mes.get()]
             ano = int(self.cmb_ano.get())
             tipo = {"Todos":"TODOS","NFC-e":"NFCE","Cancelamento":"CANCELAMENTO"}[self.cmb_tipo.get()]
+            
             # No automático sempre processa pendências: nunca enviados, falhas e reenvio.
             situacao = "PENDENCIAS"
             docs = listar_documentos(conn, ano, mes, tipo, situacao, self.cfg.sync.max_tentativas)
-            conn.close()
             self.docs = docs
             self.root.after(0, self.grade)
+            
             if not docs:
                 self.log("Auto verificação: nenhum XML pendente ou com falha encontrado.")
                 return
+            
             self.log(f"Auto verificação: {len(docs)} XML(s) para envio/reenvio.")
             if self.cfg.sync.enviar_automatico:
                 self._enviar(docs)
         except Exception as e:
             self.log(f"ERRO na auto verificação: {e}")
         finally:
+            if conn: # <-- CORREÇÃO: Fecha a conexão em segurança
+                conn.close()
             self.auto_em_execucao = False
             self.agendar_auto_verificacao()
 
